@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use hmac::{Hmac, Mac as _};
-use rand::{thread_rng, RngCore};
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{digest::CtOutput, Sha256};
 use subtle::{Choice, ConstantTimeEq};
@@ -138,9 +138,7 @@ impl Ratchet {
     const RATCHET_PART_COUNT: usize = 4;
     const LAST_RATCHET_INDEX: usize = Self::RATCHET_PART_COUNT - 1;
 
-    pub fn new() -> Self {
-        let mut rng = thread_rng();
-
+    pub(super) fn new<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut ratchet =
             Self { inner: RatchetBytes(Box::new([0u8; Self::RATCHET_LENGTH])), counter: 0 };
 
@@ -261,21 +259,21 @@ mod tests {
 
     #[test]
     fn advancing_high_counter_ratchet_doesnt_panic() {
-        let mut ratchet = Ratchet::new();
+        let mut ratchet = Ratchet::new(&mut crate::utilities::rng());
         ratchet.counter = 0x00FFFFFF;
         ratchet.advance();
     }
 
     #[test]
     fn advance_to_with_high_counter_doesnt_panic() {
-        let mut ratchet = Ratchet::new();
+        let mut ratchet = Ratchet::new(&mut crate::utilities::rng());
         ratchet.counter = (1 << 24) - 1;
         ratchet.advance_to(1 << 24);
     }
 
     #[test]
     fn advance_forward_and_back() {
-        let mut ratchet = Ratchet::new();
+        let mut ratchet = Ratchet::new(&mut crate::utilities::rng());
         assert_eq!(ratchet.counter, 0);
         ratchet.advance();
         assert_eq!(ratchet.counter, 1);

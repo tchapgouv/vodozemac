@@ -21,7 +21,7 @@ use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit},
     ChaCha20Poly1305,
 };
-use rand::thread_rng;
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use x25519_dalek::ReusableSecret;
@@ -120,10 +120,28 @@ pub struct Account {
 
 impl Account {
     /// Create a new [`Account`] with new random identity keys.
+    #[cfg(feature = "getrandom")]
     pub fn new() -> Self {
+        Self::new_with_rng(&mut crate::utilities::rng())
+    }
+
+    /// Create a new [`Account`] with new random identity keys, drawing entropy
+    /// from the provided random number generator.
+    ///
+    /// This behaves exactly like [`Account::new`] but sources its randomness
+    /// from the caller-supplied `rng` instead of the thread-local generator. It
+    /// enables deterministic testing, reproducible builds, and custom/hardware
+    /// entropy sources.
+    ///
+    /// **Warning**: the security of the account's identity keys rests entirely
+    /// on the quality of `rng`. Supplying a low-entropy, predictable, or reused
+    /// generator yields predictable identity keys and breaks the security of
+    /// any session built from this account. Pass a cryptographically secure
+    /// generator seeded with sufficient entropy.
+    pub fn new_with_rng<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         Self {
-            signing_key: Ed25519Keypair::new(),
-            diffie_hellman_key: Curve25519Keypair::new(),
+            signing_key: Ed25519Keypair::new_with_rng(rng),
+            diffie_hellman_key: Curve25519Keypair::new(rng),
             one_time_keys: OneTimeKeys::new(),
             fallback_keys: FallbackKeys::new(),
         }
@@ -169,15 +187,43 @@ impl Account {
     }
 
     /// Create a [`Session`] with the given identity key and one-time key.
+    #[cfg(feature = "getrandom")]
     pub fn create_outbound_session(
         &self,
         session_config: SessionConfig,
         identity_key: Curve25519PublicKey,
         one_time_key: Curve25519PublicKey,
     ) -> Session {
-        let rng = thread_rng();
+        self.create_outbound_session_with_rng(
+            session_config,
+            identity_key,
+            one_time_key,
+            &mut crate::utilities::rng(),
+        )
+    }
 
-        let base_key = ReusableSecret::random_from_rng(rng);
+    /// Create a [`Session`] with the given identity key and one-time key,
+    /// drawing entropy from the provided random number generator.
+    ///
+    /// This behaves exactly like [`Account::create_outbound_session`] but
+    /// sources its randomness from the caller-supplied `rng` instead of the
+    /// thread-local generator. It enables deterministic testing, reproducible
+    /// builds, and custom/hardware entropy sources.
+    ///
+    /// **Warning**: the security of the resulting session rests entirely on the
+    /// quality of `rng`; the ephemeral base key and initial ratchet key it
+    /// mints must come from fresh, high-quality randomness. Supplying a
+    /// low-entropy, predictable, or reused generator breaks forward secrecy
+    /// and authentication. Pass a cryptographically secure generator seeded
+    /// with sufficient entropy.
+    pub fn create_outbound_session_with_rng<R: RngCore + CryptoRng>(
+        &self,
+        session_config: SessionConfig,
+        identity_key: Curve25519PublicKey,
+        one_time_key: Curve25519PublicKey,
+        rng: &mut R,
+    ) -> Session {
+        let base_key = ReusableSecret::random_from_rng(&mut *rng);
         let public_base_key = Curve25519PublicKey::from(&base_key);
 
         let shared_secret = Shared3DHSecret::new(
@@ -193,7 +239,7 @@ impl Account {
             one_time_key,
         };
 
-        Session::new(session_config, shared_secret, session_keys)
+        Session::new_with_rng(session_config, shared_secret, session_keys, rng)
     }
 
     /// Try to find a [`Curve25519SecretKey`] that forms a pair with the given
@@ -228,10 +274,26 @@ impl Account {
 
     /// Create a [`Session`] from the given [`PreKeyMessage`] message and
     /// identity key
+    #[cfg(feature = "getrandom")]
     pub fn create_inbound_session(
         &mut self,
         their_identity_key: Curve25519PublicKey,
         pre_key_message: &PreKeyMessage,
+    ) -> Result<InboundCreationResult, SessionCreationError> {
+        self.create_inbound_session_with_rng(
+            their_identity_key,
+            pre_key_message,
+            &mut crate::utilities::rng(),
+        )
+    }
+
+    /// Create a [`Session`] from the given [`PreKeyMessage`] message and
+    /// identity key with a custom RNG.
+    pub fn create_inbound_session_with_rng<R: RngCore + CryptoRng>(
+        &mut self,
+        their_identity_key: Curve25519PublicKey,
+        pre_key_message: &PreKeyMessage,
+        rng: &mut R,
     ) -> Result<InboundCreationResult, SessionCreationError> {
         if their_identity_key != pre_key_message.identity_key() {
             Err(SessionCreationError::MismatchedIdentityKey(
@@ -277,7 +339,7 @@ impl Account {
             );
 
             // Decrypt the message to check if the Session is actually valid.
-            let plaintext = session.decrypt_decoded(&pre_key_message.message)?;
+            let plaintext = session.decrypt_decoded(&pre_key_message.message, rng)?;
 
             // We only drop the one-time key now, this is why we can't use a
             // one-time key type that takes `self`. If we didn't do this,
@@ -300,8 +362,29 @@ impl Account {
     /// places for one-time keys, If we try to generate new ones while the store
     /// is completely populated, the oldest one-time keys will get discarded
     /// to make place for new ones.
+    #[cfg(feature = "getrandom")]
     pub fn generate_one_time_keys(&mut self, count: usize) -> OneTimeKeyGenerationResult {
-        self.one_time_keys.generate(count)
+        self.generate_one_time_keys_with_rng(count, &mut crate::utilities::rng())
+    }
+
+    /// Generates the supplied number of one time keys, drawing entropy from the
+    /// provided random number generator.
+    ///
+    /// This behaves exactly like [`Account::generate_one_time_keys`] but
+    /// sources its randomness from the caller-supplied `rng` instead of the
+    /// thread-local generator. It enables deterministic testing,
+    /// reproducible builds, and custom/hardware entropy sources.
+    ///
+    /// **Warning**: the security of the generated one-time keys rests entirely
+    /// on the quality of `rng`. Supplying a low-entropy, predictable, or reused
+    /// generator yields predictable one-time keys. Pass a cryptographically
+    /// secure generator seeded with sufficient entropy.
+    pub fn generate_one_time_keys_with_rng<R: RngCore + CryptoRng>(
+        &mut self,
+        count: usize,
+        rng: &mut R,
+    ) -> OneTimeKeyGenerationResult {
+        self.one_time_keys.generate(count, rng)
     }
 
     /// Get the number of one-time keys we have stored locally.
@@ -334,8 +417,28 @@ impl Account {
     /// Returns the public Curve25519 key of the *previous* fallback key, that
     /// is, the one that will get removed from the [`Account`] when this method
     /// is called. This return value is mostly useful for logging purposes.
+    #[cfg(feature = "getrandom")]
     pub fn generate_fallback_key(&mut self) -> Option<Curve25519PublicKey> {
-        self.fallback_keys.generate_fallback_key()
+        self.generate_fallback_key_with_rng(&mut crate::utilities::rng())
+    }
+
+    /// Generate a single new fallback key, drawing entropy from the provided
+    /// random number generator.
+    ///
+    /// This behaves exactly like [`Account::generate_fallback_key`] but sources
+    /// its randomness from the caller-supplied `rng` instead of the
+    /// thread-local generator. It enables deterministic testing,
+    /// reproducible builds, and custom/hardware entropy sources.
+    ///
+    /// **Warning**: the security of the generated fallback key rests entirely
+    /// on the quality of `rng`. Supplying a low-entropy, predictable, or
+    /// reused generator yields a predictable fallback key. Pass a
+    /// cryptographically secure generator seeded with sufficient entropy.
+    pub fn generate_fallback_key_with_rng<R: RngCore + CryptoRng>(
+        &mut self,
+        rng: &mut R,
+    ) -> Option<Curve25519PublicKey> {
+        self.fallback_keys.generate_fallback_key(rng)
     }
 
     /// Get the currently unpublished fallback key.
@@ -470,9 +573,19 @@ impl Account {
     ///
     /// The format used here is defined in
     /// [MSC3814](https://github.com/matrix-org/matrix-spec-proposals/pull/3814).
+    #[cfg(feature = "getrandom")]
     pub fn to_dehydrated_device(
         &self,
         key: &[u8; 32],
+    ) -> Result<DehydratedDeviceResult, crate::DehydratedDeviceError> {
+        self.to_dehydrated_device_with_rng(key, &mut crate::utilities::rng())
+    }
+
+    /// Create a dehydrated device from the account with a custom RNG.
+    pub fn to_dehydrated_device_with_rng<R: RngCore + CryptoRng>(
+        &self,
+        key: &[u8; 32],
+        rng: &mut R,
     ) -> Result<DehydratedDeviceResult, crate::DehydratedDeviceError> {
         use matrix_pickle::Encode;
 
@@ -485,7 +598,6 @@ impl Account {
             .map_err(|e| DehydratedDeviceError::LibolmPickle(LibolmPickleError::Encode(e)))?;
 
         let cipher = ChaCha20Poly1305::new(key.into());
-        let rng = thread_rng();
         let nonce = ChaCha20Poly1305::generate_nonce(rng);
         let ciphertext = cipher.encrypt(&nonce, encoded.as_slice());
 
@@ -555,6 +667,7 @@ impl Account {
     }
 }
 
+#[cfg(feature = "getrandom")]
 impl Default for Account {
     fn default() -> Self {
         Self::new()
@@ -1223,7 +1336,8 @@ mod test {
 
         account.generate_one_time_keys(50);
 
-        // Generate two fallback keys so the previous fallback key field gets populated.
+        // Generate two fallback keys so the previous fallback key field gets
+        // populated.
         account.generate_fallback_key();
         account.generate_fallback_key();
 
@@ -1264,8 +1378,8 @@ mod test {
         let mut one_time_keys: Vec<_> =
             unpickled.one_time_keys().values().map(|k| k.to_base64()).collect();
 
-        // We generated 10 one-time keys on the libolm side, we expect the next key id
-        // to be 11.
+        // We generated 10 one-time keys on the libolm side, we expect the next
+        // key id to be 11.
         assert_eq!(unpickled.one_time_keys.next_key_id, 11);
 
         olm_one_time_keys.sort();

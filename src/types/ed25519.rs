@@ -22,7 +22,7 @@ use ed25519_dalek::Verifier;
 use ed25519_dalek::{
     Signature, Signer, SigningKey, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
 };
-use rand::thread_rng;
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::{ByteBuf as SerdeByteBuf, Bytes as SerdeBytes};
 use sha2::Sha512;
@@ -128,9 +128,25 @@ impl<'d> Deserialize<'d> for ExpandedSecretKey {
 
 impl Ed25519Keypair {
     /// Create a new, random, `Ed25519Keypair`.
+    #[cfg(feature = "getrandom")]
     pub fn new() -> Self {
-        let mut rng = thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
+        Self::new_with_rng(&mut crate::utilities::rng())
+    }
+
+    /// Create a new, random, `Ed25519Keypair`, drawing entropy from the
+    /// provided random number generator.
+    ///
+    /// This behaves exactly like [`Ed25519Keypair::new`] but sources its
+    /// randomness from the caller-supplied `rng` instead of the thread-local
+    /// generator (see [`Ed25519Keypair::new`]). It enables deterministic
+    /// testing, reproducible builds, and custom/hardware entropy sources.
+    ///
+    /// **Warning**: the security of the generated keypair rests entirely on the
+    /// quality of `rng`; a low-entropy, predictable, or reused generator yields
+    /// predictable or repeated keys. Pass a cryptographically secure generator
+    /// seeded with sufficient entropy.
+    pub fn new_with_rng<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
+        let signing_key = SigningKey::generate(rng);
 
         Self {
             public_key: Ed25519PublicKey(signing_key.verifying_key()),
@@ -188,6 +204,7 @@ impl Ed25519Keypair {
     }
 }
 
+#[cfg(feature = "getrandom")]
 impl Default for Ed25519Keypair {
     fn default() -> Self {
         Self::new()
@@ -207,9 +224,25 @@ impl Ed25519SecretKey {
     const PADDED_BASE64_LENGTH: usize = 44;
 
     /// Create a new random `Ed25519SecretKey`.
+    #[cfg(feature = "getrandom")]
     pub fn new() -> Self {
-        let mut rng = thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
+        Self::new_with_rng(&mut crate::utilities::rng())
+    }
+
+    /// Create a new random `Ed25519SecretKey`, drawing entropy from the
+    /// provided random number generator.
+    ///
+    /// This behaves exactly like [`Ed25519SecretKey::new`] but sources its
+    /// randomness from the caller-supplied `rng` instead of the thread-local
+    /// generator. It enables deterministic testing, reproducible builds, and
+    /// custom/hardware entropy sources.
+    ///
+    /// **Warning**: the security of the generated key rests entirely on the
+    /// quality of `rng`; a low-entropy, predictable, or reused generator yields
+    /// predictable or repeated keys. Pass a cryptographically secure generator
+    /// seeded with sufficient entropy.
+    pub fn new_with_rng<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
+        let signing_key = SigningKey::generate(rng);
         let key = Box::new(signing_key);
 
         Self(key)
@@ -253,9 +286,9 @@ impl Ed25519SecretKey {
                 length: decoded_len_estimate(input.len()),
             })
         } else {
-            // Ed25519 secret keys can sometimes be encoded with padding, don't ask me why.
-            // This means that if the unpadded decoding fails, we have to attempt the padded
-            // one.
+            // Ed25519 secret keys can sometimes be encoded with padding, don't
+            // ask me why. This means that if the unpadded decoding
+            // fails, we have to attempt the padded one.
             let mut bytes = if let Ok(bytes) = base64ct::Base64Unpadded::decode_vec(input) {
                 bytes
             } else {
@@ -301,6 +334,7 @@ impl Ed25519SecretKey {
     }
 }
 
+#[cfg(feature = "getrandom")]
 impl Default for Ed25519SecretKey {
     fn default() -> Self {
         Self::new()

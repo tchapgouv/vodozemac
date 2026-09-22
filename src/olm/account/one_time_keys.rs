@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use super::PUBLIC_MAX_ONE_TIME_KEYS;
@@ -77,8 +78,8 @@ impl OneTimeKeys {
         key: Curve25519SecretKey,
         published: bool,
     ) -> (Curve25519PublicKey, Option<Curve25519PublicKey>) {
-        // If we hit the max number of one-time keys we'd like to keep, first remove one
-        // before we create a new one.
+        // If we hit the max number of one-time keys we'd like to keep, first
+        // remove one before we create a new one.
         let removed = if self.private_keys.len() >= Self::MAX_ONE_TIME_KEYS {
             if let Some(key_id) = self.private_keys.keys().next().copied() {
                 let public_key = if let Some(private_key) = self.private_keys.remove(&key_id) {
@@ -112,9 +113,12 @@ impl OneTimeKeys {
         (public_key, removed)
     }
 
-    fn generate_one_time_key(&mut self) -> (Curve25519PublicKey, Option<Curve25519PublicKey>) {
+    fn generate_one_time_key<R: RngCore + CryptoRng>(
+        &mut self,
+        rng: &mut R,
+    ) -> (Curve25519PublicKey, Option<Curve25519PublicKey>) {
         let key_id = KeyId(self.next_key_id);
-        let key = Curve25519SecretKey::new();
+        let key = Curve25519SecretKey::new_with_rng(rng);
         self.insert_secret_key(key_id, key, false)
     }
 
@@ -127,12 +131,16 @@ impl OneTimeKeys {
         !self.unpublished_public_keys.contains_key(key_id)
     }
 
-    pub fn generate(&mut self, count: usize) -> OneTimeKeyGenerationResult {
+    pub(super) fn generate<R: RngCore + CryptoRng>(
+        &mut self,
+        count: usize,
+        rng: &mut R,
+    ) -> OneTimeKeyGenerationResult {
         let mut removed_keys = Vec::new();
         let mut created_keys = Vec::new();
 
         for _ in 0..count {
-            let (created, removed) = self.generate_one_time_key();
+            let (created, removed) = self.generate_one_time_key(rng);
 
             created_keys.push(created);
             if let Some(removed) = removed {
@@ -192,7 +200,7 @@ mod test {
 
         assert!(store.private_keys.is_empty());
 
-        store.generate(OneTimeKeys::MAX_ONE_TIME_KEYS);
+        store.generate(OneTimeKeys::MAX_ONE_TIME_KEYS, &mut crate::utilities::rng());
         assert_eq!(store.unpublished_public_keys.len(), OneTimeKeys::MAX_ONE_TIME_KEYS);
         assert_eq!(store.private_keys.len(), OneTimeKeys::MAX_ONE_TIME_KEYS);
         assert_eq!(store.key_ids_by_key.len(), OneTimeKeys::MAX_ONE_TIME_KEYS);
@@ -213,7 +221,7 @@ mod test {
             store.private_keys.keys().next().copied().expect("Couldn't get the first key ID");
         assert_eq!(oldest_key_id, KeyId(0));
 
-        store.generate(10);
+        store.generate(10, &mut crate::utilities::rng());
         assert_eq!(store.unpublished_public_keys.len(), 10);
         assert_eq!(store.private_keys.len(), OneTimeKeys::MAX_ONE_TIME_KEYS);
         assert_eq!(store.key_ids_by_key.len(), OneTimeKeys::MAX_ONE_TIME_KEYS);

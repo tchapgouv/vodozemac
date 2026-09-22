@@ -37,7 +37,7 @@ unwrap_used = "deny"
 mem_forget = "deny"
 
 [features]
-default = ["libolm-compat"]
+default = ["getrandom", "libolm-compat"]
 js = ["getrandom/js"]
 strict-signatures = []
 libolm-compat = []
@@ -45,6 +45,9 @@ insecure-pk-encryption = []
 # The low-level-api feature exposes extra APIs that are only useful in advanced
 # use cases and require extra care to use.
 low-level-api = []
+# Enables public methods that use the default OS RNG. Otherwise the caller
+# needs to provide a custom RNG via `with_rng` methods instead.
+getrandom = []
 
 [dependencies]
 aes = "0.8.4"
@@ -61,6 +64,7 @@ hmac = "0.12.1"
 matrix-pickle = { version = "0.2.1" }
 prost = "0.13.4"
 rand = "0.8.5"
+rand_core = "0.6"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_bytes = "0.11.15"
 serde_json = "1.0.135"

@@ -80,7 +80,7 @@
 
 use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, Key as Chacha20Key, KeyInit, Nonce};
 use hkdf::Hkdf;
-use rand::thread_rng;
+use rand::{CryptoRng, RngCore};
 use sha2::Sha512;
 use thiserror::Error;
 use x25519_dalek::{EphemeralSecret, SharedSecret};
@@ -91,6 +91,7 @@ use crate::Curve25519PublicKey;
 
 mod messages;
 
+/// The prefix used for Matrix QR login info in ECIES messages.
 const MATRIX_QR_LOGIN_INFO_PREFIX: &str = "MATRIX_QR_CODE_LOGIN";
 
 /// The Error type for the ECIES submodule.
@@ -228,6 +229,7 @@ impl Ecies {
     /// this for a different purpose, consider using the [`Ecies::with_info()`]
     /// method.
     #[allow(clippy::new_without_default)]
+    #[cfg(feature = "getrandom")]
     pub fn new() -> Self {
         Self::with_info(MATRIX_QR_LOGIN_INFO_PREFIX)
     }
@@ -237,8 +239,27 @@ impl Ecies {
     ///
     /// The application info will be used to derive the various secrets and
     /// provide domain separation.
+    #[cfg(feature = "getrandom")]
     pub fn with_info(info: &str) -> Self {
-        let rng = thread_rng();
+        Self::with_info_and_rng(info, &mut crate::utilities::rng())
+    }
+
+    /// Create a new, random, unestablished ECIES session, using the provided
+    /// random number generator.
+    ///
+    /// This method will use the `MATRIX_QR_CODE_LOGIN` info. If you are using
+    /// this for a different purpose, consider using the
+    /// [`Ecies::with_info_and_rng()`] method.
+    pub fn new_with_rng<R: RngCore + CryptoRng + ?Sized>(rng: &mut R) -> Self {
+        Self::with_info_and_rng(MATRIX_QR_LOGIN_INFO_PREFIX, rng)
+    }
+
+    /// Create a new, random, unestablished ECIES session with the given
+    /// application info and random number generator.
+    ///
+    /// The application info will be used to derive the various secrets and
+    /// provide domain separation.
+    pub fn with_info_and_rng<R: RngCore + CryptoRng + ?Sized>(info: &str, rng: &mut R) -> Self {
         let secret_key = EphemeralSecret::random_from_rng(rng);
         let application_info_prefix = info.to_owned();
 
@@ -702,8 +723,8 @@ mod test {
         use crate::types::Curve25519Keypair;
 
         let app_info = "foobar";
-        let our_public_key = Curve25519Keypair::new().public_key;
-        let their_public_key = Curve25519Keypair::new().public_key;
+        let our_public_key = Curve25519Keypair::new(&mut crate::utilities::rng()).public_key;
+        let their_public_key = Curve25519Keypair::new(&mut crate::utilities::rng()).public_key;
 
         let check_code_info1 = EstablishedEcies::get_check_code_info(
             app_info,

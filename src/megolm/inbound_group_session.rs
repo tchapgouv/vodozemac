@@ -635,7 +635,8 @@ mod test {
 
         let mut first_session = InboundGroupSession::new(&session_key, Default::default());
 
-        // This one is less trusted because it's imported from an `ExportedSessionKey`.
+        // This one is less trusted because it's imported from an
+        // `ExportedSessionKey`.
         let mut second_session =
             InboundGroupSession::import(&first_session.export_at(10).unwrap(), Default::default());
         assert!(!second_session.signing_key_verified);

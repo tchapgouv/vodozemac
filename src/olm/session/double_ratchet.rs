@@ -14,6 +14,7 @@
 
 use std::fmt::{Debug, Formatter};
 
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -47,10 +48,10 @@ pub(super) struct DoubleRatchet {
 }
 
 impl DoubleRatchet {
-    pub fn next_message_key(&mut self) -> MessageKey {
+    pub(super) fn next_message_key<R: RngCore + CryptoRng>(&mut self, rng: &mut R) -> MessageKey {
         match &mut self.inner {
             DoubleRatchetState::Inactive(ratchet) => {
-                let mut ratchet = ratchet.activate();
+                let mut ratchet = ratchet.activate(rng);
 
                 let message_key = ratchet.next_message_key();
                 self.inner = DoubleRatchetState::Active(ratchet);
@@ -61,17 +62,25 @@ impl DoubleRatchet {
         }
     }
 
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Message {
-        self.next_message_key().encrypt(plaintext)
+    pub(super) fn encrypt<R: RngCore + CryptoRng>(
+        &mut self,
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Message {
+        self.next_message_key(rng).encrypt(plaintext)
     }
 
-    pub fn encrypt_truncated_mac(&mut self, plaintext: &[u8]) -> Message {
-        self.next_message_key().encrypt_truncated_mac(plaintext)
+    pub(super) fn encrypt_truncated_mac<R: RngCore + CryptoRng>(
+        &mut self,
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Message {
+        self.next_message_key(rng).encrypt_truncated_mac(plaintext)
     }
 
     /// Create a new `DoubleRatchet` instance, based on a newly-calculated
     /// shared secret.
-    pub fn active(shared_secret: Shared3DHSecret) -> Self {
+    pub fn active<R: RngCore + CryptoRng>(shared_secret: Shared3DHSecret, rng: &mut R) -> Self {
         let (root_key, chain_key) = shared_secret.expand();
 
         let root_key = RootKey::new(root_key);
@@ -80,7 +89,7 @@ impl DoubleRatchet {
         let ratchet = ActiveDoubleRatchet {
             parent_ratchet_key: None, // First chain in a session lacks parent ratchet key
             ratchet_count: RatchetCount::new(),
-            active_ratchet: Ratchet::new(root_key),
+            active_ratchet: Ratchet::new(root_key, rng),
             symmetric_key_ratchet: chain_key,
         };
 
@@ -121,11 +130,15 @@ impl DoubleRatchet {
         Self { inner: ratchet.into() }
     }
 
-    pub fn advance(&mut self, ratchet_key: RemoteRatchetKey) -> (DoubleRatchet, ReceiverChain) {
+    pub(super) fn advance<R: RngCore + CryptoRng>(
+        &mut self,
+        ratchet_key: RemoteRatchetKey,
+        rng: &mut R,
+    ) -> (DoubleRatchet, ReceiverChain) {
         let (ratchet, receiver_chain) = match &self.inner {
             DoubleRatchetState::Active(r) => r.advance(ratchet_key),
             DoubleRatchetState::Inactive(r) => {
-                let ratchet = r.activate();
+                let ratchet = r.activate(rng);
                 // Advancing an inactive ratchet shouldn't be possible since the
                 // other side did not yet receive our new ratchet key.
                 //
@@ -195,8 +208,8 @@ struct InactiveDoubleRatchet {
 }
 
 impl InactiveDoubleRatchet {
-    fn activate(&self) -> ActiveDoubleRatchet {
-        let (root_key, chain_key, ratchet_key) = self.root_key.advance(&self.ratchet_key);
+    fn activate<R: RngCore + CryptoRng>(&self, rng: &mut R) -> ActiveDoubleRatchet {
+        let (root_key, chain_key, ratchet_key) = self.root_key.advance(&self.ratchet_key, rng);
         let active_ratchet = Ratchet::new_with_ratchet_key(root_key, ratchet_key);
 
         ActiveDoubleRatchet {
@@ -427,7 +440,8 @@ mod test {
             RatchetCount::Unknown(())
         );
 
-        // Once Bob replies, Alice's count bumps to 1, but Bob's remains unknown.
+        // Once Bob replies, Alice's count bumps to 1, but Bob's remains
+        // unknown.
         let olm_message = bob_session.encrypt("sssh");
         alice_session.decrypt(&olm_message).expect("Alice could not decrypt message from Bob");
         assert_eq!(
